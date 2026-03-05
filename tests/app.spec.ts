@@ -14,7 +14,7 @@ test('homepage has the app heading', async ({ page }) => {
 
 test('counter increments on click', async ({ page }) => {
   await page.goto('/');
-  const button = page.getByRole('button', { name: /count is/ });
+  const button = page.getByRole('button', { name: /count has/ });
   await expect(button).toHaveText('count is 0');
   await button.click();
   await expect(button).toHaveText('count is 1');
