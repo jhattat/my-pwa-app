@@ -11,6 +11,9 @@ env:
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -71,12 +74,46 @@ jobs:
             echo "fix_result=failed" >> $GITHUB_OUTPUT
           fi
 
-      # 4. Check if regression is known
+      # 4. If fix worked → create branch + PR
+      - name: Create fix branch and PR
+        if: steps.fix.outputs.fix_result == 'passed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="fix/tests-auto-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add tests/app.spec.ts
+          git commit -m "fix(tests): auto-correct failing tests via Claude
+
+          Tests were failing on main. Claude AI analyzed the errors
+          and corrected the test file. All tests pass after this fix.
+
+          Co-Authored-By: Claude <noreply@anthropic.com>"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "fix(tests): auto-correct failing tests" \
+            --body "$(cat <<'EOF'
+          ## Auto-fix par IA
+
+          Les tests Playwright échouaient sur `main`. Claude a analysé les erreurs et corrigé le fichier de test.
+
+          **Changements :** `tests/app.spec.ts`
+
+          Vérifiez les corrections avant de merger.
+
+          🤖 Généré automatiquement par le workflow CI
+          EOF
+          )" \
+            --base main \
+            --head "$BRANCH"
+
+      # 5. Check if regression is known
       - name: Check regression status
         if: steps.tests.outcome == 'failure'
         id: regression
         run: |
-          # Parse failed test names and check each in Supabase
           ALL_KNOWN=true
 
           grep -E '^\s+\d+\)' test-output.txt | while read -r line; do
@@ -84,7 +121,6 @@ jobs:
             ERROR_MSG=$(grep -A 2 "Error:" test-output.txt | head -3 | tr '\n' ' ')
 
             if ! node scripts/report-error.mjs "$TEST_NAME" "$ERROR_MSG"; then
-              # exit code 2 = new error
               echo "all_known=false" >> $GITHUB_OUTPUT
               exit 0
             fi
@@ -92,16 +128,14 @@ jobs:
 
           echo "all_known=true" >> $GITHUB_OUTPUT
 
-      # 5. Deploy if fix worked OR if regression is known
-      - name: Deploy to Vercel (after fix or known regression)
+      # 6. Deploy if known regression (fix PR was created for the actual fix)
+      - name: Deploy to Vercel (known regression)
         if: |
-          steps.tests.outcome == 'failure' && (
-            steps.fix.outputs.fix_result == 'passed' ||
-            steps.regression.outputs.all_known == 'true'
-          )
+          steps.tests.outcome == 'failure' &&
+          steps.regression.outputs.all_known == 'true'
         run: npx vercel --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
 
-      # 6. Fail the workflow if unknown regression and fix didn't work
+      # 7. Fail on unknown regression
       - name: Fail on unknown regression
         if: |
           steps.tests.outcome == 'failure' &&
