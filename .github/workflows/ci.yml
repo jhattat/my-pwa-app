@@ -49,24 +49,31 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          TEST_SOURCE=$(cat tests/app.spec.ts)
-          APP_SOURCE=$(cat src/App.tsx)
           TEST_OUTPUT=$(cat test-output.txt)
+          APP_SOURCE=$(cat src/App.tsx)
+
+          # Detect failing test files from Playwright output
+          FAILING_FILES=$(grep -oP 'tests/\S+\.spec\.ts' test-output.txt | sort -u)
+          echo "Failing test files: $FAILING_FILES"
+
+          # Build dynamic file sections for the prompt
+          FILE_SECTIONS=""
+          for f in $FAILING_FILES; do
+            FILE_SECTIONS+="## $f\n$(cat "$f")\n\n"
+          done
 
           # Build the prompt
           PROMPT=$(cat <<PROMPT_EOF
-          The following Playwright tests are failing. Fix the test file so all tests pass.
+          The following Playwright tests are failing. Fix the test files so all tests pass.
 
           ## Playwright Error Output
           ${TEST_OUTPUT}
 
-          ## Current Test File (tests/app.spec.ts)
-          ${TEST_SOURCE}
-
+          ${FILE_SECTIONS}
           ## Application Source (src/App.tsx)
           ${APP_SOURCE}
 
-          Output ONLY the complete corrected contents of tests/app.spec.ts.
+          Output ONLY a JSON object where each key is a test file path (e.g. "tests/title.spec.ts") and the value is the complete corrected file content.
           Do not include markdown code fences. Do not include explanations.
           PROMPT_EOF
           )
@@ -91,9 +98,15 @@ jobs:
             exit 0
           fi
 
-          echo "$FIX" > tests/app.spec.ts
-          echo "--- Fixed test file ---"
-          cat tests/app.spec.ts
+          # Write back only the failing files that Claude fixed
+          for f in $FAILING_FILES; do
+            CONTENT=$(echo "$FIX" | jq -r --arg f "$f" '.[$f] // empty')
+            if [ -n "$CONTENT" ]; then
+              echo "$CONTENT" > "$f"
+              echo "--- Fixed $f ---"
+              cat "$f"
+            fi
+          done
 
           # Re-run tests after fix
           if npx playwright test --reporter=list; then
@@ -112,7 +125,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add tests/app.spec.ts
+          git add $FAILING_FILES
           git commit -m "fix(tests): auto-correct failing tests via Claude
 
           Tests were failing on main. Claude AI analyzed the errors
@@ -127,7 +140,7 @@ jobs:
 
           Les tests Playwright échouaient sur `main`. Claude a analysé les erreurs et corrigé le fichier de test.
 
-          **Changements :** `tests/app.spec.ts`
+          **Changements :** `tests/title.spec.ts`, `tests/counter.spec.ts`
 
           Vérifiez les corrections avant de merger.
 
