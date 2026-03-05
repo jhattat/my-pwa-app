@@ -30,7 +30,9 @@ jobs:
       # 1. Run tests
       - name: Run Playwright tests
         id: tests
-        run: npx playwright test --reporter=list 2>&1 | tee test-output.txt
+        run: |
+          set -o pipefail
+          npx playwright test --reporter=list 2>&1 | tee test-output.txt
         continue-on-error: true
 
       # 2. Tests passed → deploy
