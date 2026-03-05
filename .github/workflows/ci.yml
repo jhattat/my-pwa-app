@@ -3,6 +3,7 @@ name: CI - Test, Fix & Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
