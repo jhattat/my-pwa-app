@@ -20,7 +20,7 @@ function App() {
       <p className="subtitle">Installable Progressive Web App</p>
       <div className="card">
         <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
+          Incrémente compteur {count}
         </button>
       </div>
       <p className="read-the-docs">
