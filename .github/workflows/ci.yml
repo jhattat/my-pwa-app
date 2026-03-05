@@ -40,15 +40,14 @@ jobs:
         if: steps.tests.outcome == 'success'
         run: npx vercel --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
 
-      # 3. Tests failed → try AI fix
+      # 3. Tests failed → try AI fix via Anthropic API
       - name: Fix tests with Claude
         if: steps.tests.outcome == 'failure'
         id: fix
+        continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          npm install -g @anthropic-ai/claude-code
-
           TEST_SOURCE=$(cat tests/app.spec.ts)
           APP_SOURCE=$(cat src/App.tsx)
           TEST_OUTPUT=$(cat test-output.txt)
@@ -56,18 +55,28 @@ jobs:
           PROMPT="The following Playwright tests are failing. Fix the test file so all tests pass.
 
           ## Playwright Error Output
-          $TEST_OUTPUT
+          ${TEST_OUTPUT}
 
           ## Current Test File (tests/app.spec.ts)
-          $TEST_SOURCE
+          ${TEST_SOURCE}
 
           ## Application Source (src/App.tsx)
-          $APP_SOURCE
+          ${APP_SOURCE}
 
           Output ONLY the complete corrected contents of tests/app.spec.ts.
           Do not include markdown code fences. Do not include explanations."
 
-          echo "$PROMPT" | claude -p --output-format text > tests/app.spec.ts
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "$(jq -n --arg prompt "$PROMPT" '{
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 4096,
+              messages: [{role: "user", content: $prompt}]
+            }')")
+
+          echo "$RESPONSE" | jq -r '.content[0].text' > tests/app.spec.ts
 
           # Re-run tests after fix
           if npx playwright test --reporter=list; then
