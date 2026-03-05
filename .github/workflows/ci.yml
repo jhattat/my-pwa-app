@@ -1,0 +1,112 @@
+name: CI - Test, Fix & Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # 1. Run tests
+      - name: Run Playwright tests
+        id: tests
+        run: npx playwright test --reporter=list 2>&1 | tee test-output.txt
+        continue-on-error: true
+
+      # 2. Tests passed → deploy
+      - name: Deploy to Vercel (tests passed)
+        if: steps.tests.outcome == 'success'
+        run: npx vercel --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
+
+      # 3. Tests failed → try AI fix
+      - name: Fix tests with Claude
+        if: steps.tests.outcome == 'failure'
+        id: fix
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+
+          TEST_SOURCE=$(cat tests/app.spec.ts)
+          APP_SOURCE=$(cat src/App.tsx)
+          TEST_OUTPUT=$(cat test-output.txt)
+
+          PROMPT="The following Playwright tests are failing. Fix the test file so all tests pass.
+
+          ## Playwright Error Output
+          $TEST_OUTPUT
+
+          ## Current Test File (tests/app.spec.ts)
+          $TEST_SOURCE
+
+          ## Application Source (src/App.tsx)
+          $APP_SOURCE
+
+          Output ONLY the complete corrected contents of tests/app.spec.ts.
+          Do not include markdown code fences. Do not include explanations."
+
+          echo "$PROMPT" | claude -p --output-format text > tests/app.spec.ts
+
+          # Re-run tests after fix
+          if npx playwright test --reporter=list; then
+            echo "fix_result=passed" >> $GITHUB_OUTPUT
+          else
+            echo "fix_result=failed" >> $GITHUB_OUTPUT
+          fi
+
+      # 4. Check if regression is known
+      - name: Check regression status
+        if: steps.tests.outcome == 'failure'
+        id: regression
+        run: |
+          # Parse failed test names and check each in Supabase
+          ALL_KNOWN=true
+
+          grep -E '^\s+\d+\)' test-output.txt | while read -r line; do
+            TEST_NAME=$(echo "$line" | sed 's/^[[:space:]]*[0-9]*)[[:space:]]*//' | sed 's/[[:space:]]*─*$//')
+            ERROR_MSG=$(grep -A 2 "Error:" test-output.txt | head -3 | tr '\n' ' ')
+
+            if ! node scripts/report-error.mjs "$TEST_NAME" "$ERROR_MSG"; then
+              # exit code 2 = new error
+              echo "all_known=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+
+          echo "all_known=true" >> $GITHUB_OUTPUT
+
+      # 5. Deploy if fix worked OR if regression is known
+      - name: Deploy to Vercel (after fix or known regression)
+        if: |
+          steps.tests.outcome == 'failure' && (
+            steps.fix.outputs.fix_result == 'passed' ||
+            steps.regression.outputs.all_known == 'true'
+          )
+        run: npx vercel --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
+
+      # 6. Fail the workflow if unknown regression and fix didn't work
+      - name: Fail on unknown regression
+        if: |
+          steps.tests.outcome == 'failure' &&
+          steps.fix.outputs.fix_result != 'passed' &&
+          steps.regression.outputs.all_known != 'true'
+        run: |
+          echo "❌ Tests failed with NEW unknown regression. Deployment blocked."
+          exit 1

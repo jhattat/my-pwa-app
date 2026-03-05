@@ -70,7 +70,7 @@ if (existing && existing.length > 0) {
   );
 
   console.log(`KNOWN regression: "${testName}" (seen ${newCount} times)`);
-  process.exit(0);
+  process.exit(0); // exit 0 = known
 }
 
 // New error
@@ -87,3 +87,4 @@ await supabaseRequest(
 );
 
 console.log(`NEW error detected: "${testName}"`);
+process.exit(2); // exit 2 = new/unknown error
